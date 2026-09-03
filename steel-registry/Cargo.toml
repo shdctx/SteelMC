@@ -19,6 +19,7 @@ serde_json.workspace = true
 
 # Data structures
 glam.workspace = true
+indexmap.workspace = true
 rustc-hash.workspace = true
 
 # Logging

@@ -38,6 +38,7 @@ use crate::command::execution::{
 use crate::command::sender::{CommandExecutionOwner, CommandSender};
 use crate::config::{ResolvedDomainConfig, RuntimeConfig, StorageSelection};
 use crate::entity::{DEFAULT_MAX_AIR_SUPPLY, Entity, EntityBase, LivingEntity as _, SharedEntity};
+use crate::map::DomainMapData;
 use crate::permission::{
     OP_GROUP, PermissionEntry, PermissionExpr, PermissionGroupConfig, PermissionGroupManager,
     PermissionGroupsConfig, PermissionKey, PermissionMetadataSet, PermissionSet,
@@ -226,6 +227,13 @@ async fn test_server_with_worlds(
         .map_err(|error| format!("test permission groups should resolve: {error}"))?;
     let config = test_runtime_config();
     let registry_cache = RegistryCache::new(config.compression);
+    let map_data = DomainMapData::ephemeral(domains);
+    for world in worlds.values() {
+        let Some(maps) = map_data.get(world.domain()) else {
+            return Err(format!("test world {} has no map-data owner", world.key));
+        };
+        world.bind_map_data(Arc::clone(maps));
+    }
 
     Ok(Arc::new(Server {
         config,
@@ -234,6 +242,7 @@ async fn test_server_with_worlds(
         key_store: KeyStore::create(),
         registry_cache,
         worlds,
+        map_data,
         online_players: PlayerMap::new(),
         player_admissions: SyncMutex::new(FxHashMap::default()),
         player_admission_changed: Notify::new(),

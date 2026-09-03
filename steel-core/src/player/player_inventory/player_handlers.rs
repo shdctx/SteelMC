@@ -12,6 +12,7 @@ use crate::{
         },
         slots::CraftingHandler,
     },
+    map::CarriedMap,
     player::{Player, connection::NetworkConnection as _},
 };
 use glam::DVec3;
@@ -816,6 +817,33 @@ impl Player {
                 .lock()
                 .behavior_mut()
                 .broadcast_changes(&self.connection);
+        }
+    }
+
+    /// Synchronizes Vanilla filled-map colors and decorations for carried maps.
+    pub(in crate::player) fn synchronize_carried_maps(&self) {
+        let (carried, held) = {
+            let inventory = self.inventory.lock();
+            let carried = inventory
+                .items()
+                .iter()
+                .filter_map(CarriedMap::from_item)
+                .collect::<Vec<_>>();
+            let held = [inventory.get_selected_item(), inventory.get_offhand_item()]
+                .into_iter()
+                .filter_map(CarriedMap::held_id)
+                .collect::<Vec<_>>();
+            (carried, held)
+        };
+        let world = self.get_world();
+        let Some(player) = self.shared_in_world(&world) else {
+            return;
+        };
+        for packet in world
+            .map_data()
+            .synchronize_player(&player, &carried, &held)
+        {
+            self.send_packet(packet);
         }
     }
 

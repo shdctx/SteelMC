@@ -50,6 +50,7 @@ pub use profile::{
 use simdnbt::owned::{NbtCompound, NbtList, NbtTag};
 use sleep_state::PlayerSleepState;
 use std::mem::replace;
+use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -669,6 +670,7 @@ impl Player {
         self.tick_open_menu();
         self.flush_inventory_resync();
         self.broadcast_inventory_changes();
+        self.synchronize_carried_maps();
         self.update_pose();
 
         {
@@ -736,6 +738,7 @@ impl Player {
             world.chunk_map.remove_player(self);
             world.entity_tracker().on_player_leave(self);
             world.player_area_map.remove_by_entity_id(self.id());
+            world.map_data().clear_player_terrain_requests(self.uuid());
             self.set_removed(RemovalReason::Killed);
             assert_eq!(
                 self.remove_all_menus_with_disposition(MenuItemDisposition::Drop),
@@ -1024,6 +1027,14 @@ impl Player {
     /// Returns the world the player is currently in.
     pub fn get_world(&self) -> Arc<World> {
         self.world.load_full()
+    }
+
+    /// Resolves this player to the shared instance currently registered in `world`.
+    pub(crate) fn shared_in_world(&self, world: &World) -> Option<Arc<Self>> {
+        world
+            .players
+            .get_by_uuid(&self.gameprofile.id)
+            .filter(|shared| ptr::eq(shared.as_ref(), self))
     }
 
     /// Returns the server this player belongs to.

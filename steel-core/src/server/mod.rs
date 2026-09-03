@@ -39,6 +39,7 @@ use crate::entity::{
 
 use crate::chunk_saver::{ChunkStorage, PersistentEntity, registry::WorldStorageRegistry};
 use crate::level_data::{LevelDataManager, RespawnData, WorldGenerationSettings};
+use crate::map::DomainMapData;
 use crate::permission::{
     OP_GROUP, PermissionGroupManager, PermissionGroupManagerError, PermissionGroupUpdateError,
     PermissionGroupsConfig, PermissionMetadataExpression, PermissionRuleExpression, PermissionSet,
@@ -411,6 +412,8 @@ pub struct Server {
     pub registry_cache: RegistryCache,
     /// A list of all the worlds on the server.
     pub worlds: WorldMap,
+    /// Persistent filled-map data isolated by Steel domain.
+    map_data: DomainMapData,
     /// Players currently connected to the server, independent of world membership.
     online_players: PlayerMap,
     /// UUIDs reserved by a join or disconnect/save lifecycle transition.
@@ -709,6 +712,20 @@ impl Server {
             worlds.insert(world_entry.key.clone(), world);
         }
 
+        let map_data = DomainMapData::load(&resolved_worlds.domains, &worlds)
+            .await
+            .map_err(|error| format!("failed to load map data: {error}"))?;
+        for world in worlds.values() {
+            let Some(maps) = map_data.get(world.domain()) else {
+                return Err(format!(
+                    "loaded world {} has no map-data owner for domain {}",
+                    world.key,
+                    world.domain()
+                ));
+            };
+            world.bind_map_data(Arc::clone(maps));
+        }
+
         let scoreboards = DomainScoreboards::load(&worlds)
             .await
             .map_err(|error| format!("failed to load domain scoreboards: {error}"))?;
@@ -733,6 +750,7 @@ impl Server {
             cancel_token,
             key_store: KeyStore::create(),
             worlds,
+            map_data,
             online_players: PlayerMap::new(),
             player_admissions: SyncMutex::new(FxHashMap::default()),
             player_admission_changed: Notify::new(),
@@ -778,6 +796,11 @@ impl Server {
     /// Saves all dirty domain command storage through domain default worlds.
     pub async fn save_command_storage(&self) -> io::Result<usize> {
         self.command_storage.save(&self.worlds).await
+    }
+
+    /// Saves one domain's filled-map data when it changed.
+    pub async fn save_map_data(&self, domain: &str) -> io::Result<bool> {
+        self.map_data.save(domain).await
     }
 
     /// Saves all command-owned persistent data while allowing each data set to fail independently.

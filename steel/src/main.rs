@@ -388,6 +388,15 @@ async fn shutdown_worlds(server: &Arc<Server>) {
         Ok(saved) => log::info!("Saved {saved} domain command storages"),
         Err(error) => log::error!("Failed to save domain command storage: {error}"),
     }
+    let mut domains = server.worlds.domain_names().collect::<Vec<_>>();
+    domains.sort_unstable();
+    for domain in &domains {
+        match server.save_map_data(domain).await {
+            Ok(true) => log::info!("Saved map data for domain {domain}"),
+            Ok(false) => {}
+            Err(error) => log::error!("Failed to save map data for domain {domain}: {error}"),
+        }
+    }
     let mut total_saved = 0;
     for world in server.worlds.values() {
         world.cleanup(&mut total_saved).await;

@@ -2825,6 +2825,7 @@ dependencies = [
  "flate2",
  "glam",
  "heck",
+ "indexmap",
  "log",
  "proc-macro2",
  "quote",

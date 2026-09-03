@@ -23,7 +23,9 @@ use crate::world::game_event::{
     GameEventContext, GameEventDispatcher, GameEventListenerCount, GameEventListenerStorage,
     SharedGameEventListener,
 };
-use crate::{chunk::chunk_map::ChunkMapGameTickTimings, world::weather::Weather};
+use crate::{
+    chunk::chunk_map::ChunkMapGameTickTimings, map::MapDataStore, world::weather::Weather,
+};
 use steel_utils::saved_data::{SavedDataManager, names as saved_data_names};
 
 use glam::DVec3;
@@ -248,6 +250,8 @@ pub struct World {
     pub level_data: SyncRwLock<LevelDataManager>,
     /// Per-world saved data storage.
     pub(crate) saved_data: SavedDataManager,
+    /// Domain-scoped filled-map data, rebound when this world joins a server.
+    map_data: SyncRwLock<Arc<MapDataStore>>,
     /// Runtime world border state.
     world_border: SyncMutex<WorldBorder>,
     /// Vanilla sleeping player counts for night-skip checks.
@@ -416,6 +420,7 @@ impl World {
                 dimension_type,
                 level_data: SyncRwLock::new(level_data),
                 saved_data,
+                map_data: SyncRwLock::new(Arc::new(MapDataStore::ephemeral())),
                 world_border: SyncMutex::new(world_border),
                 sleep_status: SyncMutex::new(sleep_status::SleepStatus::default()),
                 view_distance,
@@ -444,6 +449,16 @@ impl World {
                 pending_world_changes: SyncMutex::new(Vec::new()),
             }
         }))
+    }
+
+    /// Binds this world to the map store owned by its domain.
+    pub(crate) fn bind_map_data(&self, map_data: Arc<MapDataStore>) {
+        *self.map_data.write() = map_data;
+    }
+
+    /// Returns the map store shared by this world's domain.
+    pub(crate) fn map_data(&self) -> Arc<MapDataStore> {
+        Arc::clone(&self.map_data.read())
     }
 
     /// Cleans up the world by saving all chunks.
