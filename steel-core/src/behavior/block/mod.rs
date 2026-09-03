@@ -3,7 +3,6 @@
 use std::sync::{Arc, Weak};
 
 use glam::DVec3;
-use rand::rngs::ThreadRng;
 use smallvec::SmallVec;
 use steel_registry::block_entity_type::BlockEntityTypeRef;
 use steel_registry::blocks::BlockRef;
@@ -62,26 +61,34 @@ pub(crate) fn default_can_be_replaced(
 /// each item from it in a [`Vec`].
 #[must_use]
 pub(crate) fn drop_from_block_interact_loot_table(
+    world: &World,
     key: LootTableRef,
     interacted_block_state: BlockStateId,
     _interacted_block_entity: Option<SharedBlockEntity>,
     tool: Option<&ItemStack>,
     interacting_entity: Option<&dyn Entity>,
-    rng: &mut ThreadRng,
 ) -> Vec<ItemStack> {
-    let mut ctx = LootContext::new(rng).with_block_state(interacted_block_state);
+    let sequence = key.random_sequence.as_ref();
+    world
+        .with_loot_random(0, sequence, |random| {
+            let mut ctx = LootContext::new(random).with_block_state(interacted_block_state);
 
-    // TODO: Add the block entity to the context when it can be done.
+            // TODO: Add the block entity to the context when it can be done.
 
-    if let Some(interacting_entity) = interacting_entity {
-        ctx = ctx.with_interacting_entity(entity_loot_ref(interacting_entity));
-    }
+            if let Some(interacting_entity) = interacting_entity {
+                ctx = ctx.with_interacting_entity(entity_loot_ref(interacting_entity));
+            }
 
-    if let Some(tool) = tool {
-        ctx = ctx.with_tool(tool);
-    }
+            if let Some(tool) = tool {
+                ctx = ctx.with_tool(tool);
+            }
 
-    key.get_random_items(&mut ctx)
+            key.get_random_items(&mut ctx)
+        })
+        .unwrap_or_else(|error| {
+            log::error!("Failed to evaluate block-interact loot table: {error}");
+            Vec::new()
+        })
 }
 
 /// Samples and applies enchantment effects to a block experience drop.
@@ -292,25 +299,6 @@ pub trait BlockBehavior: Send + Sync {
     )]
     fn attack(&self, state: BlockStateId, world: &Arc<World>, pos: BlockPos, player: &Player) {}
 
-    /// Called after a player destroys this block and drops/effects are processed.
-    ///
-    /// Vanilla parity: `Block.playerDestroy(Level, Player, BlockPos, BlockState, BlockEntity, ItemStack)`.
-    #[expect(
-        unused_variables,
-        reason = "default trait implementation ignores all params"
-    )]
-    fn player_destroy(
-        &self,
-        world: &Arc<World>,
-        player: &Player,
-        pos: BlockPos,
-        state: BlockStateId,
-        block_entity: Option<&SharedBlockEntity>,
-        tool: &ItemStack,
-    ) {
-        // Default: no-op
-    }
-
     /// Called before a player removes this block.
     ///
     /// Vanilla parity: `Block.playerWillDestroy(Level, BlockPos, BlockState, Player)`.
@@ -339,6 +327,24 @@ pub trait BlockBehavior: Send + Sync {
     )]
     fn destroy(&self, state: BlockStateId, world: &Arc<World>, pos: BlockPos) {
         // Default: no-op
+    }
+
+    /// Handles a successful player break after the live block was removed.
+    ///
+    /// Vanilla parity: `Block.playerDestroy(Level, Player, BlockPos,
+    /// BlockState, BlockEntity, ItemStack)`. The game-mode layer owns shared
+    /// exhaustion/tool handling; block behavior controls the state whose loot
+    /// is evaluated.
+    fn player_destroy(
+        &self,
+        state: BlockStateId,
+        world: &Arc<World>,
+        pos: BlockPos,
+        player: &Player,
+        block_entity: Option<&dyn BlockEntity>,
+        destroyed_with: &ItemStack,
+    ) {
+        world.drop_resources_for_player(state, pos, player, block_entity, destroyed_with);
     }
 
     /// Overrides the loot generated for this block state.
