@@ -8,7 +8,7 @@ use super::{
     UpdateFlags, World, WorldEntityManager, entity_loot_ref, fluid_state_to_block, level_events,
     vanilla_blocks, vanilla_game_events,
 };
-use crate::block_entity::BlockEntity;
+use crate::block_entity::{BlockEntity, BlockEntityComponentsExt};
 
 pub(super) fn sound_is_within_range(
     sound: SoundEventRef,
@@ -381,6 +381,9 @@ impl World {
             return Vec::new();
         };
 
+        let block_entity_components = context
+            .block_entity()
+            .map(BlockEntityComponentsExt::collect_components);
         let result =
             context
                 .world()
@@ -400,12 +403,14 @@ impl World {
                     if let Some(entity) = context.entity() {
                         ctx = ctx.with_this_entity(entity_loot_ref(entity));
                     }
-                    if let Some(block_entity) = context.block_entity() {
+                    if let Some((block_entity, components)) =
+                        context.block_entity().zip(block_entity_components.as_ref())
+                    {
                         ctx = ctx.with_block_entity(BlockEntityRef {
                             block_entity_type: Some(&block_entity.get_type().key),
                             custom_name: None,
                             inventory: None,
-                            components: None,
+                            components: Some(components),
                         });
                     }
 

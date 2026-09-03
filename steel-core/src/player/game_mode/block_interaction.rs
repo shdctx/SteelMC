@@ -1,4 +1,5 @@
 use super::{block_breaking::BlockBreakAction, *};
+use crate::block_entity::BlockEntityComponentsExt as _;
 
 impl Player {
     /// Sends block update packets for a position and its neighbor.
@@ -193,7 +194,7 @@ impl Player {
 
         let include_data = self.has_infinite_materials() && packet.include_data;
 
-        let Some(item_stack) = behavior.get_clone_item_stack(block, state, include_data) else {
+        let Some(mut item_stack) = behavior.get_clone_item_stack(block, state, include_data) else {
             return;
         };
 
@@ -201,7 +202,9 @@ impl Player {
             return;
         }
 
-        // TODO: If include_data, copy the block entity data into the picked item stack.
+        if include_data && let Some(block_entity) = self.get_world().get_block_entity(packet.pos) {
+            block_entity.add_block_data_to_item(&mut item_stack);
+        }
 
         let mut inventory = self.inventory.lock();
 

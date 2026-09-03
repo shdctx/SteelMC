@@ -37,6 +37,7 @@ use crate::entity::ai::path::PathComputationType;
 use crate::entity::projectile::Projectile;
 use crate::entity::{Entity, InsideBlockEffectCollector, damage::DamageSource, entity_loot_ref};
 use crate::fluid::is_water_fluid;
+use crate::inventory::menu::MenuProvider;
 use crate::physics::collide;
 use crate::player::Player;
 use crate::world::game_event::SharedGameEventListener;
@@ -160,6 +161,16 @@ pub trait BlockBehavior: Send + Sync {
     #[expect(clippy::absolute_paths, reason = "easier for features")]
     fn type_name(&self) -> &'static str {
         std::any::type_name::<Self>()
+    }
+
+    /// Returns the sound used when this block's chest entity opens.
+    fn chest_open_sound(&self) -> Option<SoundEventRef> {
+        None
+    }
+
+    /// Returns the sound used when this block's chest entity closes.
+    fn chest_close_sound(&self) -> Option<SoundEventRef> {
+        None
     }
 
     /// Called when a player uses an empty bucket on this block.
@@ -450,6 +461,24 @@ pub trait BlockBehavior: Send + Sync {
         inv: &mut InventoryAccess,
     ) -> InteractionResult {
         InteractionResult::Pass
+    }
+
+    /// Returns the menu this block offers at `pos`, if any.
+    ///
+    /// Mirrors Vanilla `BlockBehaviour.getMenuProvider`. Spectators open menus
+    /// exclusively through this hook, so container blocks should route their
+    /// `use_without_item` opening through it as well.
+    #[expect(
+        unused_variables,
+        reason = "default trait implementation ignores all params"
+    )]
+    fn get_menu_provider(
+        &self,
+        state: BlockStateId,
+        world: &Arc<World>,
+        pos: BlockPos,
+    ) -> Option<Box<dyn MenuProvider>> {
+        None
     }
 
     /// Called when a neighboring block changes (not shape-related).
