@@ -224,10 +224,6 @@ impl RandomSequences {
     ///
     /// Failed loot evaluation must not consume a named sequence: the caller can
     /// correct the missing context and retry without changing Vanilla's result.
-    #[expect(
-        dead_code,
-        reason = "used when unpacking randomizable container loot without consuming a failed roll"
-    )]
     pub(crate) fn try_with_sequence<T, E>(
         &self,
         key: &Identifier,

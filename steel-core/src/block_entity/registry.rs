@@ -15,14 +15,12 @@ use steel_registry::{REGISTRY, RegistryEntry, RegistryExt};
 use steel_utils::{BlockPos, BlockStateId};
 
 use super::SharedBlockEntity;
-#[cfg_attr(
-    not(test),
-    expect(
-        clippy::wildcard_imports,
-        reason = "the registry intentionally imports every block entity implementation"
-    )
-)]
-use super::entities::*;
+use super::entities::{
+    BarrelBlockEntity, BeehiveBlockEntity, BellBlockEntity, BrushableBlockEntity, ChestBlockEntity,
+    ChiseledBookShelfBlockEntity, ComparatorBlockEntity, DaylightDetectorBlockEntity,
+    EndGatewayBlockEntity, EndPortalBlockEntity, FurnaceBlockEntity, JukeboxBlockEntity,
+    PistonMovingBlockEntity, PotentSulfurBlockEntity, RawBlockEntity, SignBlockEntity,
+};
 use crate::world::World;
 
 /// Factory function type for creating block entities.
@@ -97,6 +95,23 @@ impl BlockEntityRegistry {
         } else {
             Arc::new(RawBlockEntity::new(block_entity_type, level, pos, state))
         }
+    }
+
+    /// Creates a new block entity and loads NBT data into it.
+    ///
+    /// Returns `None` if no factory is registered for the given type.
+    #[must_use]
+    pub fn create_and_load(
+        &self,
+        block_entity_type: BlockEntityTypeRef,
+        level: Weak<World>,
+        pos: BlockPos,
+        state: BlockStateId,
+        nbt: &BorrowedNbtCompound<'_>,
+    ) -> Option<SharedBlockEntity> {
+        let entity = self.create(block_entity_type, level, pos, state)?;
+        entity.load_with_components(nbt);
+        Some(entity)
     }
 
     /// Creates a block entity and loads borrowed NBT, falling back to raw preservation.
@@ -223,6 +238,14 @@ pub fn init_block_entities() {
         // Register barrel block entity factory
         registry.register(&vanilla_block_entity_types::BARREL, |level, pos, state| {
             Arc::new(BarrelBlockEntity::new(level, pos, state))
+        });
+
+        registry.register(&vanilla_block_entity_types::CHEST, |level, pos, state| {
+            Arc::new(ChestBlockEntity::new(level, pos, state))
+        });
+
+        registry.register(&vanilla_block_entity_types::FURNACE, |level, pos, state| {
+            Arc::new(FurnaceBlockEntity::new(level, pos, state))
         });
 
         registry.register(

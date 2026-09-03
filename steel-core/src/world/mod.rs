@@ -27,7 +27,7 @@ use crate::{
     chunk::chunk_map::{ChunkMapGameTickTimings, ChunkSaveOutcome},
     map::MapDataStore,
     random_sequences::RandomSequences,
-    server::jobs::ServerJobQueue,
+    server::jobs::{ServerJob, ServerJobQueue},
     world::weather::Weather,
 };
 use steel_utils::saved_data::{SavedDataManager, names as saved_data_names};
@@ -496,6 +496,15 @@ impl World {
         *self.server_jobs.write() = jobs;
     }
 
+    /// Schedules deferred world work for a future server job tick.
+    pub(crate) fn spawn_server_job(&self, job: impl ServerJob + 'static) -> bool {
+        let Some(jobs) = self.server_jobs.read().upgrade() else {
+            return false;
+        };
+        jobs.spawn(job);
+        true
+    }
+
     /// Selects the RNG Vanilla uses for a loot context.
     pub(crate) fn with_loot_random<T>(
         &self,
@@ -518,10 +527,6 @@ impl World {
 
     /// Runs fallible loot evaluation without advancing a shared random source
     /// unless the complete evaluation succeeds.
-    #[expect(
-        dead_code,
-        reason = "used when unpacking randomizable container loot without consuming a failed roll"
-    )]
     pub(crate) fn try_with_loot_random<T, E>(
         &self,
         seed: i64,

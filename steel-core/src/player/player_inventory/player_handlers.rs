@@ -1,5 +1,20 @@
 use std::{f32::consts::TAU, mem, sync::Arc};
 
+use glam::DVec3;
+use steel_protocol::packets::game::{
+    CContainerClose, COpenScreen, CSetPlayerInventory, ClickType, SContainerButtonClick,
+    SContainerClick, SContainerClose, SContainerSlotStateChanged, SRenameItem, SSetCarriedItem,
+    SSetCreativeModeSlot,
+};
+use steel_registry::item_stack::ItemStack;
+use steel_utils::{
+    Downcast as _,
+    locks::Shared,
+    translations::CONTAINER_SPECTATOR_CANT_OPEN,
+    types::{GameType, InteractionHand},
+};
+use text_components::{Modifier as _, TextComponent, format::Color};
+
 use crate::{
     entity::{Entity, LivingEntity as _, RemovalReason, entities::ItemEntity},
     inventory::{
@@ -15,22 +30,6 @@ use crate::{
     map::CarriedMap,
     player::{Player, connection::NetworkConnection as _},
 };
-use glam::DVec3;
-use steel_protocol::packets::game::{
-    CContainerClose, COpenScreen, CSetPlayerInventory, ClickType, SContainerButtonClick,
-    SContainerClick, SContainerClose, SContainerSlotStateChanged, SRenameItem, SSetCarriedItem,
-    SSetCreativeModeSlot,
-};
-use steel_registry::item_stack::ItemStack;
-use steel_registry::stat::vanilla_stat_types;
-use steel_registry::vanilla_custom_stats;
-use steel_utils::{
-    Downcast as _,
-    locks::Shared,
-    translations::CONTAINER_SPECTATOR_CANT_OPEN,
-    types::{GameType, InteractionHand},
-};
-use text_components::{Modifier as _, TextComponent, format::Color};
 
 use super::{
     DeferredMenuAction, MenuItemDisposition, MenuOpenContext, MenuRemovalStatus, OpenMenuDispatch,
@@ -62,6 +61,8 @@ impl Player {
         };
         open_menu.dispatch = Some(OpenMenuDispatch {
             container_id,
+            opener_container_ids: menu.opener_container_ids(),
+            counts_as_open: true,
             overrides_player_slots,
             actions: Vec::new(),
         });
@@ -206,7 +207,6 @@ impl Player {
 
     /// Handles a container click packet (slot interaction).
     pub fn handle_container_click(&self, packet: SContainerClick) {
-        self.reset_last_action_time();
         match self.take_open_menu_for_callback(Some(packet.container_id)) {
             Ok(mut menu) => {
                 self.process_container_click(&mut menu, packet);
@@ -441,8 +441,6 @@ impl Player {
                 "{} tried to set an invalid carried item",
                 self.gameprofile.name
             );
-        } else {
-            self.reset_last_action_time();
         }
     }
 
@@ -481,6 +479,7 @@ impl Player {
         title: impl Into<TextComponent>,
         create: impl for<'a> FnOnce(MenuOpenContext<'a>) -> Menu + Send + 'static,
     ) {
+        self.cancel_deferred_container_open();
         if !self.begin_menu_open_operation() {
             return;
         }
@@ -496,6 +495,7 @@ impl Player {
     /// Mirrors `ServerPlayer.openMenu(MenuProvider)`, including the overlay
     /// spectators receive when the provider creates no menu.
     pub fn open_menu_provider(&self, provider: Box<dyn MenuProvider>) {
+        self.cancel_deferred_container_open();
         if provider.create_menu(self) == MenuCreation::Unavailable && self.is_spectator() {
             self.send_overlay_message(
                 &CONTAINER_SPECTATOR_CANT_OPEN
@@ -589,6 +589,8 @@ impl Player {
             }
             open_menu.dispatch = Some(OpenMenuDispatch {
                 container_id: menu.container_id(),
+                opener_container_ids: menu.opener_container_ids(),
+                counts_as_open: true,
                 overrides_player_slots: menu.overrides_player_slots(),
                 actions: Vec::new(),
             });
@@ -766,6 +768,8 @@ impl Player {
             };
             open_menu.dispatch = Some(OpenMenuDispatch {
                 container_id: menu.container_id(),
+                opener_container_ids: menu.opener_container_ids(),
+                counts_as_open: false,
                 overrides_player_slots: menu.overrides_player_slots(),
                 actions: Vec::new(),
             });
@@ -800,6 +804,26 @@ impl Player {
     pub fn has_container_open(&self) -> bool {
         let open_menu = self.open_menu.lock();
         open_menu.menu.is_some() || open_menu.dispatch.is_some()
+    }
+
+    /// Returns whether the player's active external menu owns `container_id`.
+    ///
+    /// The dispatch snapshot keeps ownership observable while callbacks
+    /// temporarily move the menu out of player state. Closing dispatches
+    /// stop counting before the menu's removal hook decrements its openers.
+    #[must_use]
+    pub(crate) fn has_open_container(&self, container_id: ContainerId) -> bool {
+        let open_menu = self.open_menu.lock();
+        if open_menu
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.opens_container(container_id))
+        {
+            return true;
+        }
+        open_menu.dispatch.as_ref().is_some_and(|dispatch| {
+            dispatch.counts_as_open && dispatch.opener_container_ids.contains(&container_id)
+        })
     }
 
     /// Runs the open menu's per-tick hook, if an external menu is open.
@@ -1039,17 +1063,12 @@ impl Player {
 
         let spawn_pos = DVec3::new(pos.x, spawn_y, pos.z);
 
-        let item_ref = item.item;
-        let item_count = item.count;
-
         let entity = self
             .get_world()
             .spawn_item_with_velocity(spawn_pos, item, velocity)?;
         entity.set_pickup_delay(40);
         if thrown_from_hand {
             entity.set_thrower(self.gameprofile.id);
-            self.award_stat_with_count(&vanilla_stat_types::ITEM_DROPPED, item_ref, item_count);
-            self.award_custom_stat(&vanilla_custom_stats::DROP);
         }
         Some(entity)
     }

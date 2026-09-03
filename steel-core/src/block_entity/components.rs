@@ -177,7 +177,7 @@ mod tests {
     use text_components::TextComponent;
 
     use super::*;
-    use crate::block_entity::entities::BarrelBlockEntity;
+    use crate::block_entity::entities::ChestBlockEntity;
 
     #[test]
     fn explicit_components_round_trip_through_block_entity_nbt() {
@@ -185,39 +185,43 @@ mod tests {
         let name = TextComponent::plain("Named");
         let mut custom_data = NbtCompound::new();
         custom_data.insert("steel_test", 1_i32);
-        let mut stack = ItemStack::new(&vanilla_items::BARREL);
+        let mut stack = ItemStack::new(&vanilla_items::CHEST);
         stack.set(CUSTOM_NAME, name.clone());
         stack.set(
             CUSTOM_DATA,
             CustomData::try_from_compound(custom_data).expect("test custom data should be valid"),
         );
-        let barrel = BarrelBlockEntity::new(
+        let chest = ChestBlockEntity::new(
             Weak::new(),
             BlockPos::new(1, 2, 3),
-            vanilla_blocks::BARREL.default_state(),
+            vanilla_blocks::CHEST.default_state(),
         );
 
-        barrel.apply_components_from_item_stack(&stack);
-        let saved = barrel.save_without_metadata();
+        chest.apply_components_from_item_stack(&stack);
+        let saved = chest.save_without_metadata();
 
         let Some(components) = saved.compound("components") else {
             panic!("block entities always save their components compound");
         };
         assert!(components.get("minecraft:custom_data").is_some());
-        assert!(components.get("minecraft:custom_name").is_some());
+        assert!(
+            components.get("minecraft:custom_name").is_none(),
+            "consumed implicit components are saved by the entity's own fields"
+        );
+        assert!(saved.get("CustomName").is_some());
 
         let mut bytes = Vec::new();
         saved.write(&mut bytes);
         let borrowed = read_borrowed_compound(&mut Cursor::new(bytes.as_slice()))
-            .expect("saved block-entity NBT should reborrow");
-        let loaded = BarrelBlockEntity::new(
+            .expect("saved chest NBT should reborrow");
+        let loaded = ChestBlockEntity::new(
             Weak::new(),
             BlockPos::new(1, 2, 3),
-            vanilla_blocks::BARREL.default_state(),
+            vanilla_blocks::CHEST.default_state(),
         );
         loaded.load_with_components(&borrowed);
 
         assert!(loaded.base().components().has(CUSTOM_DATA));
-        assert!(loaded.base().components().has(CUSTOM_NAME));
+        assert_eq!(loaded.display_name(), name);
     }
 }

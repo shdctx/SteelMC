@@ -1,9 +1,8 @@
 use super::{
-    Arc, BLOCK_BEHAVIORS, BlockHitResult, Entity, GameType, ITEM_BEHAVIORS, InteractionHand,
-    InteractionResult, InventoryAccess, Player, REGISTRY, SUseItem, UseOnContext, World,
-    wrap_degrees,
+    Arc, BLOCK_BEHAVIORS, BlockHitResult, BlockStateExt as _, Entity, GameType, ITEM_BEHAVIORS,
+    InteractionHand, InteractionResult, InventoryAccess, Player, REGISTRY, SUseItem, UseOnContext,
+    World, wrap_degrees,
 };
-use steel_registry::blocks::block_state_ext::BlockStateExt as _;
 
 /// Handles using an item on a block.
 ///
