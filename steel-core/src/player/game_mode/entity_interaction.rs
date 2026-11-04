@@ -14,7 +14,7 @@ use crate::player::food_data::food_constants;
 use std::ops::Add;
 use steel_math::trig;
 use steel_registry::particle_type::ParticleData;
-use steel_registry::{vanilla_custom_stats, vanilla_particle_types};
+use steel_registry::{sound_events, vanilla_custom_stats, vanilla_particle_types};
 
 const fn sound_holder_ref(holder: &SoundEventHolder) -> Option<SoundEventRef> {
     match holder {
@@ -385,6 +385,13 @@ impl Player {
         self.play_sound(sound, 1.0, 1.0);
     }
 
+    /// Vanilla `Player.playServerSideSound`. Unlike `Entity::play_sound`, this
+    /// ignores `is_silent` and is also sent to this player.
+    fn play_server_side_sound(&self, sound: SoundEventRef) {
+        self.get_world()
+            .play_sound_at(sound, self.sound_source(), self.position(), 1.0, 1.0, None);
+    }
+
     fn cannot_attack(self: &Arc<Self>, entity: &dyn Entity) -> bool {
         !entity.attackable()
             || entity.skip_attack_interaction(&(Arc::clone(self) as Arc<dyn Entity>))
@@ -395,11 +402,20 @@ impl Player {
     /// Returns `true` if the target accepted damage.
     #[must_use]
     pub fn attack(self: &Arc<Self>, target: &SharedEntity) -> bool {
-        let entity = target.as_ref();
-        if self.cannot_attack(entity) {
+        if self.cannot_attack(target.as_ref()) {
             return false;
         }
 
+        let was_hurt = self.deal_attack_damage(target);
+        let world = self.get_world();
+        enchantment_helper::do_post_piercing_attack_effects(&world, self.as_ref());
+        was_hurt
+    }
+
+    /// The part of vanilla `Player.attack` between `cannotAttack` and
+    /// `postPiercingAttack`, which vanilla runs regardless of the outcome.
+    fn deal_attack_damage(self: &Arc<Self>, target: &SharedEntity) -> bool {
+        let entity = target.as_ref();
         let attacking_item = {
             let inventory = self.inventory.lock();
             let stack = inventory.get_item_in_hand(InteractionHand::MainHand);
@@ -427,45 +443,54 @@ impl Player {
             enchantment_helper::modify_damage(&attacking_item, &enchantment_context, attack_damage);
         let magic_boost = attack_strength_scale * (enchanted_damage - attack_damage);
         let mut base_damage = attack_damage * Self::base_damage_scale_factor(attack_strength_scale);
-        base_damage += ITEM_BEHAVIORS
-            .get_behavior(attacking_item.item())
-            .get_attack_damage_bonus(self.as_ref(), entity, base_damage, &damage_source);
-        let total_damage = base_damage + magic_boost;
-        let full_strength_attack = attack_strength_scale > 0.9;
-        let knockback_attack = self.is_sprinting() && full_strength_attack;
         self.reset_attack_strength_ticker();
 
-        if total_damage <= 0.0 {
+        // Negated rather than `<= 0.0` so NaN takes the same path as in vanilla.
+        if !(base_damage > 0.0 || magic_boost > 0.0) {
             return false;
         }
 
+        let full_strength_attack = attack_strength_scale > 0.9;
+        let knockback_attack = self.is_sprinting() && full_strength_attack;
+        if knockback_attack {
+            self.play_server_side_sound(&sound_events::ENTITY_PLAYER_ATTACK_KNOCKBACK);
+        }
+
+        base_damage += ITEM_BEHAVIORS
+            .get_behavior(attacking_item.item())
+            .get_attack_damage_bonus(self.as_ref(), entity, base_damage, &damage_source);
+        // TODO: Apply crits and sweep attacks. Their sounds replace the weak/strong
+        // sound below (vanilla `attackVisualEffects`).
+        let total_damage = base_damage + magic_boost;
         let old_entity_living_health = entity
             .as_living_entity()
             .map_or(0.0, LivingEntity::get_health);
-
-        // TODO: Apply crits, sweep attacks, and sounds.
         let old_movement = entity.velocity();
         let Some(target_world) = entity.level() else {
             return false;
         };
-        let was_hurt = entity.hurt(&target_world, &damage_source, total_damage);
-        if was_hurt {
-            self.set_last_hurt_mob(Some(target));
-            let sprint_knockback = if knockback_attack { 0.5 } else { 0.0 };
-            self.cause_extra_knockback(
-                entity,
-                Self::get_knockback(attack_knockback, &attacking_item, &enchantment_context)
-                    + sprint_knockback,
-                old_movement,
-            );
-            self.item_attack_interaction(target, &damage_source, true);
-            self.damage_stats_and_hearts(entity, old_entity_living_health);
-            self.cause_food_exhaustion(food_constants::EXHAUSTION_ATTACK);
+        if !entity.hurt(&target_world, &damage_source, total_damage) {
+            self.play_server_side_sound(&sound_events::ENTITY_PLAYER_ATTACK_NODAMAGE);
+            return false;
         }
 
-        let world = self.get_world();
-        enchantment_helper::do_post_piercing_attack_effects(&world, self.as_ref());
-        was_hurt
+        let sprint_knockback = if knockback_attack { 0.5 } else { 0.0 };
+        self.cause_extra_knockback(
+            entity,
+            Self::get_knockback(attack_knockback, &attacking_item, &enchantment_context)
+                + sprint_knockback,
+            old_movement,
+        );
+        self.play_server_side_sound(if full_strength_attack {
+            &sound_events::ENTITY_PLAYER_ATTACK_STRONG
+        } else {
+            &sound_events::ENTITY_PLAYER_ATTACK_WEAK
+        });
+        self.set_last_hurt_mob(Some(target));
+        self.item_attack_interaction(target, &damage_source, true);
+        self.damage_stats_and_hearts(entity, old_entity_living_health);
+        self.cause_food_exhaustion(food_constants::EXHAUSTION_ATTACK);
+        true
     }
 
     fn item_attack_interaction(

@@ -17,9 +17,10 @@ use super::{
 use crate::behavior::{InteractionResult, init_behaviors};
 use crate::chunk_saver::PersistentEntity;
 use crate::entity::{
-    DEFAULT_MAX_AIR_SUPPLY, Entity, EntitySyncedData, LivingEntity, SharedEntity,
+    DEFAULT_MAX_AIR_SUPPLY, Entity, EntitySyncedData, LivingEntity, MobEffectInstance,
+    SharedEntity,
     damage::DamageSource,
-    entities::{EndermiteEntity, ItemEntity},
+    entities::{EndermiteEntity, ItemEntity, PigEntity},
     next_entity_id,
 };
 use crate::inventory::{
@@ -31,8 +32,8 @@ use crate::inventory::{
 use crate::permission::{PermissionEntry, PermissionKey, PermissionMetadataSet, PermissionSet};
 use crate::player::game_mode::PlayerGameModeState;
 use crate::test_support::{
-    TestPlayerBuilder, fresh_test_world, fresh_test_world_in_domain, hard_damage_test_world,
-    insert_ready_full_chunk, test_world,
+    TestPlayerBuilder, TestWorld, fresh_test_world, fresh_test_world_in_domain,
+    hard_damage_test_world, insert_ready_full_chunk, test_world,
 };
 use crate::world::World;
 use glam::DVec3;
@@ -46,13 +47,14 @@ use steel_registry::blocks::properties::{BlockStateProperties, Direction};
 use steel_registry::data_component_predicate::DataComponentMatchers;
 use steel_registry::data_components::vanilla_components::{CAN_BREAK, EQUIPPABLE};
 use steel_registry::data_components::{AdventureModePredicate, BlockPredicate};
-use steel_registry::packets::play::C_REMOVE_ENTITIES;
+use steel_registry::packets::play::{C_REMOVE_ENTITIES, C_SOUND};
+use steel_registry::sound_event::SoundEvent;
 use steel_registry::stat::vanilla_stat_types;
 use steel_registry::{
     RegistryHolderSet, entity_data::EntityData, init_vanilla_registry, item_stack::ItemStack,
-    vanilla_attributes, vanilla_blocks, vanilla_custom_stats, vanilla_damage_types,
+    sound_events, vanilla_attributes, vanilla_blocks, vanilla_custom_stats, vanilla_damage_types,
     vanilla_enchantments, vanilla_entities, vanilla_game_rules, vanilla_items, vanilla_menu_types,
-    vanilla_world_clocks,
+    vanilla_mob_effects, vanilla_world_clocks,
 };
 use steel_utils::codec::VarInt;
 use steel_utils::locks::{IntoShared as _, SyncMutex};
@@ -1864,5 +1866,169 @@ fn sword_does_not_destroy_blocks_in_creative() {
         world.get_block_state(pos),
         dirt,
         "swords should not destroy blocks when player is in creative mode."
+    );
+}
+
+struct AttackSoundFixture {
+    _world: TestWorld,
+    attacker: Arc<Player>,
+    pig: Arc<PigEntity>,
+    target: SharedEntity,
+    observed_packets: Arc<SyncMutex<Vec<EncodedPacket>>>,
+}
+
+impl AttackSoundFixture {
+    fn new(key: &'static str) -> Self {
+        init_vanilla_registry();
+        init_behaviors();
+        let world_fixture = fresh_test_world(key);
+        let world = &world_fixture.world;
+        let pos = DVec3::new(8.5, 64.0, 8.5);
+        insert_ready_full_chunk(world, ChunkPos::new(0, 0));
+
+        let attacker = test_player(Arc::clone(world));
+        assert!(attacker.try_set_position(pos).is_ok());
+        let observed_packets = Arc::new(SyncMutex::new(Vec::new()));
+        let connection = Arc::new(PlayerConnection::Other(Box::new(RecordingConnection {
+            sent_packets: Arc::clone(&observed_packets),
+            closed: AtomicBool::new(false),
+        })));
+        let observer = TestPlayerBuilder::new(Arc::clone(world), "Observer", next_entity_id())
+            .connection(connection)
+            .build();
+        assert!(observer.try_set_position(pos).is_ok());
+        assert!(world.add_player(observer, ResetReason::InitialJoin));
+
+        let pig = Arc::new(PigEntity::new(
+            &vanilla_entities::PIG,
+            next_entity_id(),
+            pos + DVec3::X,
+            Arc::downgrade(world),
+        ));
+        let target: SharedEntity = Arc::<PigEntity>::clone(&pig);
+        Self {
+            _world: world_fixture,
+            attacker,
+            pig,
+            target,
+            observed_packets,
+        }
+    }
+
+    fn charge_attack(&self) {
+        for _ in 0..40 {
+            self.attacker.tick_attack_strength();
+        }
+    }
+
+    /// Attacks the pig and returns the attack result plus the observed player
+    /// attack sounds. The pig's own hurt sound is not part of these assertions.
+    fn attack(&self) -> (bool, Vec<i32>) {
+        let attack_sounds = [
+            &sound_events::ENTITY_PLAYER_ATTACK_KNOCKBACK,
+            &sound_events::ENTITY_PLAYER_ATTACK_NODAMAGE,
+            &sound_events::ENTITY_PLAYER_ATTACK_STRONG,
+            &sound_events::ENTITY_PLAYER_ATTACK_WEAK,
+        ]
+        .map(SoundEvent::packet_holder_id);
+        self.pig.set_invulnerable_time(0);
+        self.observed_packets.lock().clear();
+        let was_hurt = self.attacker.attack(&self.target);
+        let sounds = self
+            .observed_packets
+            .lock()
+            .iter()
+            .filter_map(|packet| {
+                let mut cursor = Cursor::new(packet.encoded_data.as_slice());
+                VarInt::read(&mut cursor).ok()?;
+                if VarInt::read(&mut cursor).ok()?.0 != C_SOUND {
+                    return None;
+                }
+                Some(VarInt::read(&mut cursor).ok()?.0)
+            })
+            .filter(|sound| attack_sounds.contains(sound))
+            .collect();
+        (was_hurt, sounds)
+    }
+}
+
+#[test]
+fn player_attack_plays_vanilla_weak_strong_and_knockback_sounds() {
+    let fixture = AttackSoundFixture::new("player_attack_sounds");
+
+    assert_eq!(
+        fixture.attack(),
+        (
+            true,
+            vec![sound_events::ENTITY_PLAYER_ATTACK_WEAK.packet_holder_id()]
+        )
+    );
+
+    fixture.charge_attack();
+    assert_eq!(
+        fixture.attack(),
+        (
+            true,
+            vec![sound_events::ENTITY_PLAYER_ATTACK_STRONG.packet_holder_id()]
+        )
+    );
+
+    fixture.charge_attack();
+    fixture.attacker.set_sprinting(true);
+    assert_eq!(
+        fixture.attack(),
+        (
+            true,
+            vec![
+                sound_events::ENTITY_PLAYER_ATTACK_KNOCKBACK.packet_holder_id(),
+                sound_events::ENTITY_PLAYER_ATTACK_STRONG.packet_holder_id(),
+            ]
+        )
+    );
+}
+
+#[test]
+fn player_attack_sounds_ignore_attacker_silence() {
+    let fixture = AttackSoundFixture::new("player_attack_sounds_silent");
+    fixture.attacker.set_silent(true);
+
+    assert_eq!(
+        fixture.attack(),
+        (
+            true,
+            vec![sound_events::ENTITY_PLAYER_ATTACK_WEAK.packet_holder_id()]
+        ),
+        "vanilla playServerSideSound does not check isSilent"
+    );
+}
+
+#[test]
+fn player_attack_rejected_by_target_plays_nodamage_sound() {
+    let fixture = AttackSoundFixture::new("player_attack_sounds_nodamage");
+    fixture.pig.set_health(0.0);
+
+    assert_eq!(
+        fixture.attack(),
+        (
+            false,
+            vec![sound_events::ENTITY_PLAYER_ATTACK_NODAMAGE.packet_holder_id()]
+        )
+    );
+}
+
+#[test]
+fn player_attack_without_damage_plays_no_sound() {
+    let fixture = AttackSoundFixture::new("player_attack_sounds_weakness");
+    // Weakness drops the bare-hand attack damage to zero.
+    fixture
+        .attacker
+        .add_mob_effect(MobEffectInstance::new(vanilla_mob_effects::WEAKNESS, 0));
+    fixture.charge_attack();
+    fixture.attacker.set_sprinting(true);
+
+    assert_eq!(
+        fixture.attack(),
+        (false, Vec::new()),
+        "vanilla skips the knockback sound when neither base damage nor magic boost is positive"
     );
 }
